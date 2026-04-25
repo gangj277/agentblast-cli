@@ -17,6 +17,25 @@ cd /path/to/your/agent-app
 agentblast
 ```
 
+Check the installed version:
+
+```bash
+agentblast --version
+```
+
+Agent Blast checks npm for newer releases when the TUI opens. If an update exists, the top status area shows the target version and the command to run:
+
+```text
+/update
+```
+
+You can also update non-interactively:
+
+```bash
+agentblast update
+agentblast update --check
+```
+
 Run a non-interactive red-team scan:
 
 ```bash
@@ -154,6 +173,7 @@ Useful TUI commands:
 /apply    preview and confirm the next source patch
 /replay   rerun checks after patching
 /report   write Markdown and HTML reports
+/update   install the latest Agent Blast CLI release from npm
 ```
 
 Interactive controls:
@@ -201,6 +221,7 @@ Expected smoke output:
 ```bash
 AGENTBLAST_CODEX_BIN=/path/to/codex
 AGENTBLAST_CODEX_MODEL=gpt-5.5
+AGENTBLAST_DISABLE_UPDATE_CHECK=1
 ```
 
 ## Implementation Notes
@@ -209,6 +230,7 @@ AGENTBLAST_CODEX_MODEL=gpt-5.5
 - The legacy Codex CLI diagnostic wrapper lives in `src/codex/codex-oauth-client.ts`.
 - The public CLI entrypoint is `src/cli.tsx`.
 - The TUI lives in `src/ui/AgentBlastApp.tsx`.
+- Startup update checks and `agentblast update` live in `src/update/version-check.ts`.
 - The native model-callable agent tool loop lives in `src/agent`.
 - Deterministic repo inspection lives in `src/tools`, `src/inspect`, and `src/scan`.
 - The red-team harness is a five-stage local pipeline under `src/redteam`: `surface-profiler`, `scenario-planner`, `attack-search`, `local-executor`, `judge`, and `reducer`.

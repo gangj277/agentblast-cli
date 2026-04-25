@@ -6,14 +6,17 @@ import React from "react";
 import { render } from "ink";
 import { DEFAULT_CODEX_MODEL } from "./codex/codex-oauth-client.js";
 import { CodexResponsesClient } from "./codex/codex-responses-client.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./core/package-info.js";
 import { resolveTargetCwd } from "./core/paths.js";
 import { AgentBlastApp } from "./ui/AgentBlastApp.js";
+import { checkForUpdate, installLatestUpdate } from "./update/version-check.js";
 import { AgentBlastWorkflows } from "./workflows/agentblast-workflows.js";
 
 const program = new Command();
 
 program
   .name("agentblast")
+  .version(PACKAGE_VERSION, "-v, --version", "Print Agent Blast version")
   .description("Agent Blast: local defensive red-team and hardening CLI for AI agents.")
   .option("-C, --cwd <path>", "Target codebase directory", process.cwd())
   .option("-m, --model <model>", "Codex model", process.env.AGENTBLAST_CODEX_MODEL ?? DEFAULT_CODEX_MODEL)
@@ -163,6 +166,43 @@ program.command("report").description("Write report for a fresh scan").action(as
   const result = await workflows.report();
   console.log(result.message);
 });
+
+program
+  .command("update")
+  .description("Check for and install the latest Agent Blast CLI release from npm")
+  .option("--check", "Only check whether an update is available")
+  .action(async (options: { check?: boolean }) => {
+    const status = await checkForUpdate();
+    if (status.state === "available") {
+      console.log(`${PACKAGE_NAME} ${status.currentVersion} -> ${status.latestVersion}`);
+      console.log(`Install command: ${status.installCommand}`);
+      if (options.check) return;
+      const result = await installLatestUpdate();
+      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
+      if (output) console.log(output);
+      console.log(`Updated ${PACKAGE_NAME} to ${status.latestVersion}. Restart agentblast to use the new version.`);
+      return;
+    }
+
+    if (status.state === "current") {
+      console.log(`${PACKAGE_NAME} is up to date at ${status.currentVersion}.`);
+      return;
+    }
+
+    if (status.state === "disabled") {
+      console.log(`Update checks are disabled. Current version: ${status.currentVersion}.`);
+      return;
+    }
+
+    if (status.state === "unavailable") {
+      console.log(`Could not check updates for ${PACKAGE_NAME}: ${status.error}`);
+      process.exitCode = options.check ? 1 : 0;
+      return;
+    }
+
+    console.log(`No installable update state returned for ${PACKAGE_NAME}.`);
+    process.exitCode = options.check ? 1 : 0;
+  });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

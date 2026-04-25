@@ -13,8 +13,22 @@ import {
 } from "../core/types.js";
 import { AgentBlastWorkflows } from "../workflows/agentblast-workflows.js";
 import { DEFAULT_CODEX_MODEL } from "../codex/codex-oauth-client.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "../core/package-info.js";
+import { checkForUpdate, installLatestUpdate, UpdateStatus, updateStatusLabel } from "../update/version-check.js";
 
-type Phase = "idle" | "inspect" | "scan" | "redteam" | "harden" | "confirm" | "apply" | "replay" | "report" | "chat" | "error";
+type Phase =
+  | "idle"
+  | "inspect"
+  | "scan"
+  | "redteam"
+  | "harden"
+  | "confirm"
+  | "apply"
+  | "replay"
+  | "report"
+  | "chat"
+  | "update"
+  | "error";
 
 export type AgentBlastAppProps = {
   cwd: string;
@@ -36,6 +50,7 @@ const COMMANDS: CommandDefinition[] = [
   { name: "/apply", usage: "/apply", description: "Preview and confirm the next patch" },
   { name: "/replay", usage: "/replay", description: "Rerun checks after patching" },
   { name: "/report", usage: "/report", description: "Write Markdown and HTML reports" },
+  { name: "/update", usage: "/update", description: "Install the latest Agent Blast CLI release" },
   { name: "/help", usage: "/help", description: "Show command reference" },
   { name: "/quit", usage: "/quit", description: "Exit Agent Blast" }
 ];
@@ -55,8 +70,13 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
   const [pendingApply, setPendingApply] = useState(false);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | undefined>();
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
+    state: "checking",
+    packageName: PACKAGE_NAME,
+    currentVersion: PACKAGE_VERSION
+  });
   const [events, setEvents] = useState<TranscriptEvent[]>(() => [
-    event("system", "Agent Blast ready. Start with /inspect, then /scan or /redteam standard.")
+    event("system", `Agent Blast v${PACKAGE_VERSION} ready. Start with /inspect, then /scan or /redteam standard.`)
   ]);
 
   React.useEffect(() => {
@@ -74,6 +94,31 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
       active = false;
     };
   }, [workflows]);
+
+  React.useEffect(() => {
+    let active = true;
+    checkForUpdate()
+      .then((status) => {
+        if (!active) return;
+        setUpdateStatus(status);
+        if (status.state === "available") {
+          addEvent("system", `Update available: ${status.packageName} ${status.currentVersion} -> ${status.latestVersion}. Run /update to install.`);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setUpdateStatus({
+          state: "unavailable",
+          packageName: PACKAGE_NAME,
+          currentVersion: PACKAGE_VERSION,
+          error: error instanceof Error ? error.message : String(error),
+          checkedAt: new Date().toISOString()
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -243,6 +288,53 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
+      if (parsed.name === "/update") {
+        setPhase("update");
+        const latestStatus = await checkForUpdate();
+        setUpdateStatus(latestStatus);
+        if (latestStatus.state === "available") {
+          addEvent("system", `Installing ${latestStatus.packageName} ${latestStatus.latestVersion} with ${latestStatus.installCommand}`);
+          const result = await installLatestUpdate();
+          setUpdateStatus({
+            state: "installed",
+            packageName: latestStatus.packageName,
+            currentVersion: latestStatus.currentVersion,
+            latestVersion: latestStatus.latestVersion,
+            checkedAt: new Date().toISOString()
+          });
+          addEvent(
+            "agent",
+            [
+              `Updated ${latestStatus.packageName} from ${latestStatus.currentVersion} to ${latestStatus.latestVersion}.`,
+              "Restart agentblast to run the new version.",
+              summarizeInstallOutput(result.stdout, result.stderr)
+            ]
+              .filter(Boolean)
+              .join("\n")
+          );
+          setPhase("idle");
+          return;
+        }
+        if (latestStatus.state === "current") {
+          addEvent("agent", `Agent Blast is up to date at ${latestStatus.currentVersion}.`);
+          setPhase("idle");
+          return;
+        }
+        if (latestStatus.state === "disabled") {
+          addEvent("agent", `Update checks are disabled. Current version: ${latestStatus.currentVersion}.`);
+          setPhase("idle");
+          return;
+        }
+        if (latestStatus.state === "unavailable") {
+          addEvent("error", `Could not check for updates: ${latestStatus.error}`);
+          setPhase("idle");
+          return;
+        }
+        addEvent("error", "No installable update state returned.");
+        setPhase("idle");
+        return;
+      }
+
       if (parsed.name.startsWith("/") && !COMMANDS.some((item) => item.name === parsed.name)) {
         addEvent("error", `Unknown command: ${parsed.name}. Type /help for available commands.`);
         setPhase("idle");
@@ -283,6 +375,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
       patches={patches}
       redTeam={redTeam}
       replay={replay}
+      updateStatus={updateStatus}
       width={stdout.columns ?? 100}
       pendingApply={pendingApply}
     />
@@ -308,6 +401,7 @@ export function AgentBlastView(props: {
   patches: PatchProposal[];
   redTeam?: RedTeamRun;
   replay?: ReplayResult;
+  updateStatus?: UpdateStatus;
   width: number;
   pendingApply?: boolean;
 }) {
@@ -326,6 +420,10 @@ export function AgentBlastView(props: {
         <Box justifyContent="space-between">
           <Text color="gray">{shortenPath(props.cwd, compact ? 46 : 70)}</Text>
           <Text color={props.oauthStatus.includes("OAuth") ? "green" : "yellow"}>{props.oauthStatus} | {props.model}</Text>
+        </Box>
+        <Box justifyContent="space-between">
+          <Text color={updateColor(props.updateStatus)}>{props.updateStatus ? updateStatusLabel(props.updateStatus) : `v${PACKAGE_VERSION}`}</Text>
+          <Text color="gray">{props.updateStatus?.state === "available" ? "Run /update" : " "}</Text>
         </Box>
       </Box>
 
@@ -445,8 +543,17 @@ function roleLabel(role: TranscriptEvent["role"]): string {
 function phaseLabel(phase: Phase): string {
   if (phase === "idle") return "ready";
   if (phase === "confirm") return "confirmation required";
+  if (phase === "update") return "updating cli";
   if (phase === "error") return "attention needed";
   return `running ${phase}`;
+}
+
+function updateColor(status: UpdateStatus | undefined): string {
+  if (!status) return "gray";
+  if (status.state === "available") return "yellow";
+  if (status.state === "installed" || status.state === "current") return "green";
+  if (status.state === "unavailable") return "gray";
+  return "gray";
 }
 
 function roleColor(role: TranscriptEvent["role"]): string {
@@ -591,4 +698,10 @@ function truncate(value: string, length: number): string {
 function shortenPath(value: string, max: number): string {
   if (value.length <= max) return value;
   return `…${value.slice(value.length - max + 1)}`;
+}
+
+function summarizeInstallOutput(stdout: string, stderr: string): string {
+  const output = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n").trim();
+  if (!output) return "";
+  return truncate(output, 900);
 }

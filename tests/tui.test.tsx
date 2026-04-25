@@ -12,10 +12,11 @@ describe("AgentBlastView", () => {
         oauthStatus="ChatGPT OAuth"
         phase="idle"
         input="/in"
-        suggestions={[{ name: "/inspect", description: "Map agent entrypoints, prompts, tools, retrieval" }]}
+        suggestions={[{ name: "/inspect", usage: "/inspect", description: "Map agent entrypoints, prompts, tools, retrieval" }]}
         events={[{ id: "1", role: "system", text: "Agent Blast ready.", timestamp: new Date().toISOString() }]}
         findings={[]}
         patches={[]}
+        updateStatus={{ state: "current", packageName: "agentblast-cli", currentVersion: "0.1.1", latestVersion: "0.1.1", checkedAt: new Date().toISOString() }}
         width={120}
       />
     );
@@ -29,6 +30,36 @@ describe("AgentBlastView", () => {
     expect(frame).toContain("/inspect");
     expect(frame).toContain("agentblast >");
     expect(frame).toContain("Tab complete");
+    expect(frame).toContain("v0.1.1 current");
+  });
+
+  it("shows a visible update indicator when a newer CLI release exists", () => {
+    const { lastFrame } = render(
+      <AgentBlastView
+        cwd="/tmp/example"
+        model="gpt-5.5"
+        oauthStatus="ChatGPT OAuth"
+        phase="idle"
+        input=""
+        suggestions={[]}
+        events={[{ id: "1", role: "system", text: "Agent Blast ready.", timestamp: new Date().toISOString() }]}
+        findings={[]}
+        patches={[]}
+        updateStatus={{
+          state: "available",
+          packageName: "agentblast-cli",
+          currentVersion: "0.1.1",
+          latestVersion: "0.1.2",
+          installCommand: "npm install -g agentblast-cli@latest",
+          checkedAt: new Date().toISOString()
+        }}
+        width={120}
+      />
+    );
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("update 0.1.2 available");
+    expect(frame).toContain("Run /update");
   });
 
   it("shows confirmation mode for source edits", () => {
@@ -43,6 +74,7 @@ describe("AgentBlastView", () => {
         events={[{ id: "1", role: "system", text: "Confirm source edit?", timestamp: new Date().toISOString() }]}
         findings={[]}
         patches={[{ id: "PATCH-001", findingId: "AB-001", title: "Patch", targetPath: "a.ts", rationale: "test", diff: "diff", status: "proposed" }]}
+        updateStatus={{ state: "current", packageName: "agentblast-cli", currentVersion: "0.1.1", latestVersion: "0.1.1", checkedAt: new Date().toISOString() }}
         width={120}
         pendingApply
       />
