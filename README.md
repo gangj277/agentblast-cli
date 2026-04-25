@@ -148,10 +148,21 @@ Useful TUI commands:
 /inspect  map agent entrypoints, prompts, tools, and retrieval
 /scan     generate defensive findings
 /redteam  run bounded local adversarial cases
+/redteam standard --strategy fuzz --max-attempts-per-case 5
+/redteam deep --strategy hybrid --max-depth 4
 /harden   prepare patch proposals
 /apply    preview and confirm the next source patch
 /replay   rerun checks after patching
 /report   write Markdown and HTML reports
+```
+
+Interactive controls:
+
+```text
+Tab       complete the highlighted slash command
+Up/Down   navigate command history
+Esc       clear the composer
+Ctrl-C    exit
 ```
 
 Run the red-team harness non-interactively:

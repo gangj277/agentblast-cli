@@ -1,7 +1,7 @@
 import React from "react";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
-import { AgentBlastView } from "../src/ui/AgentBlastApp.js";
+import { AgentBlastView, parseInteractiveCommand, parseRedTeamOptions } from "../src/ui/AgentBlastApp.js";
 
 describe("AgentBlastView", () => {
   it("renders the cockpit layout with status, transcript, inspector, and composer", () => {
@@ -24,8 +24,11 @@ describe("AgentBlastView", () => {
     expect(frame).toContain("Agent Blast");
     expect(frame).toContain("Transcript");
     expect(frame).toContain("Inspector");
+    expect(frame).toContain("Workflow");
+    expect(frame).toContain("Next: /inspect");
     expect(frame).toContain("/inspect");
-    expect(frame).toContain("agentblast");
+    expect(frame).toContain("agentblast >");
+    expect(frame).toContain("Tab complete");
   });
 
   it("shows confirmation mode for source edits", () => {
@@ -47,7 +50,21 @@ describe("AgentBlastView", () => {
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("confirm");
-    expect(frame).toContain("press y/n");
+    expect(frame).toContain("press y to apply");
     expect(frame).toContain("PATCH-001");
+  });
+
+  it("parses interactive red-team command options like the non-interactive CLI", () => {
+    expect(parseInteractiveCommand("/redteam standard --strategy fuzz --max-attempts-per-case 5")).toEqual({
+      name: "/redteam",
+      args: ["standard", "--strategy", "fuzz", "--max-attempts-per-case", "5"]
+    });
+
+    expect(parseRedTeamOptions(["deep", "--strategy", "hybrid", "--max-depth", "4", "--include-terminal-checks"])).toEqual({
+      mode: "deep",
+      strategy: "hybrid",
+      maxDepth: 4,
+      includeTerminalChecks: true
+    });
   });
 });

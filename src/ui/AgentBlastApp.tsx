@@ -1,6 +1,16 @@
 import React, { useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import { AgentMap, Finding, PatchProposal, RedTeamRun, ReplayResult, TranscriptEvent } from "../core/types.js";
+import {
+  AgentMap,
+  Finding,
+  PatchProposal,
+  RedTeamExecutorMode,
+  RedTeamMode,
+  RedTeamRun,
+  RedTeamStrategy,
+  ReplayResult,
+  TranscriptEvent
+} from "../core/types.js";
 import { AgentBlastWorkflows } from "../workflows/agentblast-workflows.js";
 import { DEFAULT_CODEX_MODEL } from "../codex/codex-oauth-client.js";
 
@@ -12,16 +22,22 @@ export type AgentBlastAppProps = {
   workflows?: AgentBlastWorkflows;
 };
 
-const COMMANDS = [
-  { name: "/inspect", description: "Map agent entrypoints, prompts, tools, retrieval" },
-  { name: "/scan", description: "Create findings from the current agent map" },
-  { name: "/redteam", description: "Run bounded local adversarial cases" },
-  { name: "/harden", description: "Prepare bounded source patch proposals" },
-  { name: "/apply", description: "Preview and confirm the next patch proposal" },
-  { name: "/replay", description: "Rerun checks after source changes" },
-  { name: "/report", description: "Write report markdown under .agentblast" },
-  { name: "/help", description: "Show command reference" },
-  { name: "/quit", description: "Exit Agent Blast" }
+type CommandDefinition = {
+  name: string;
+  usage: string;
+  description: string;
+};
+
+const COMMANDS: CommandDefinition[] = [
+  { name: "/inspect", usage: "/inspect", description: "Map entrypoints, prompts, tools, retrieval" },
+  { name: "/scan", usage: "/scan", description: "Create source-grounded findings" },
+  { name: "/redteam", usage: "/redteam [quick|standard|deep] [--strategy fuzz|hybrid]", description: "Run local adversarial attempts" },
+  { name: "/harden", usage: "/harden", description: "Prepare patch proposals" },
+  { name: "/apply", usage: "/apply", description: "Preview and confirm the next patch" },
+  { name: "/replay", usage: "/replay", description: "Rerun checks after patching" },
+  { name: "/report", usage: "/report", description: "Write Markdown and HTML reports" },
+  { name: "/help", usage: "/help", description: "Show command reference" },
+  { name: "/quit", usage: "/quit", description: "Exit Agent Blast" }
 ];
 
 export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: injectedWorkflows }: AgentBlastAppProps) {
@@ -37,8 +53,10 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
   const [redTeam, setRedTeam] = useState<RedTeamRun | undefined>();
   const [replay, setReplay] = useState<ReplayResult | undefined>();
   const [pendingApply, setPendingApply] = useState(false);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | undefined>();
   const [events, setEvents] = useState<TranscriptEvent[]>(() => [
-    event("system", "Agent Blast ready. Run /inspect or ask a question about this codebase.")
+    event("system", "Agent Blast ready. Start with /inspect, then /scan or /redteam standard.")
   ]);
 
   React.useEffect(() => {
@@ -79,7 +97,38 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
     if (key.return) {
       const submitted = input.trim();
       setInput("");
-      if (submitted) void runCommand(submitted);
+      setHistoryIndex(undefined);
+      if (submitted) {
+        setHistory((current) => [...current.filter((item) => item !== submitted).slice(-30), submitted]);
+        void runCommand(submitted);
+      }
+      return;
+    }
+
+    if (key.upArrow) {
+      setHistoryIndex((current) => {
+        const next = current === undefined ? history.length - 1 : Math.max(0, current - 1);
+        const item = history[next];
+        if (item) setInput(item);
+        return item ? next : current;
+      });
+      return;
+    }
+
+    if (key.downArrow) {
+      setHistoryIndex((current) => {
+        if (current === undefined) return current;
+        const next = current + 1;
+        const item = history[next];
+        setInput(item ?? "");
+        return item ? next : undefined;
+      });
+      return;
+    }
+
+    if (value === "\t" || key.tab) {
+      const firstSuggestion = suggestionsForInput(input)[0];
+      if (firstSuggestion) setInput(firstSuggestion.name);
       return;
     }
 
@@ -99,20 +148,21 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
   });
 
   async function runCommand(command: string): Promise<void> {
+    const parsed = parseInteractiveCommand(command);
     addEvent("user", command === "/apply-confirmed" ? "Confirmed patch application" : command);
 
     try {
-      if (command === "/quit") {
+      if (parsed.name === "/quit") {
         exit();
         return;
       }
 
-      if (command === "/help") {
-        addEvent("agent", COMMANDS.map((item) => `${item.name} - ${item.description}`).join("\n"));
+      if (parsed.name === "/help") {
+        addEvent("agent", COMMANDS.map((item) => `${item.usage}\n  ${item.description}`).join("\n\n"));
         return;
       }
 
-      if (command === "/inspect") {
+      if (parsed.name === "/inspect") {
         setPhase("inspect");
         const result = await workflows.inspect();
         if (result.agentMap) setAgentMap(result.agentMap);
@@ -121,7 +171,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/scan") {
+      if (parsed.name === "/scan") {
         setPhase("scan");
         const result = await workflows.scan();
         if (result.agentMap) setAgentMap(result.agentMap);
@@ -132,7 +182,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/harden") {
+      if (parsed.name === "/harden") {
         setPhase("harden");
         const result = await workflows.harden();
         if (result.patches) setPatches(result.patches);
@@ -142,9 +192,9 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/redteam") {
+      if (parsed.name === "/redteam") {
         setPhase("redteam");
-        const result = await workflows.redteam();
+        const result = await workflows.redteam(parseRedTeamOptions(parsed.args));
         if (result.agentMap) setAgentMap(result.agentMap);
         if (result.findings) setFindings(result.findings);
         if (result.redTeam) setRedTeam(result.redTeam);
@@ -153,7 +203,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/apply") {
+      if (parsed.name === "/apply") {
         const patch = patches.find((item) => item.status === "proposed");
         if (!patch) {
           addEvent("agent", "No proposed patch is waiting. Run /harden first.");
@@ -165,7 +215,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/apply-confirmed") {
+      if (parsed.name === "/apply-confirmed") {
         setPhase("apply");
         const result = await workflows.applyFirstPatch();
         if (result.patches) setPatches(result.patches);
@@ -175,7 +225,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/replay") {
+      if (parsed.name === "/replay") {
         setPhase("replay");
         const result = await workflows.replay();
         if (result.replay) setReplay(result.replay);
@@ -185,10 +235,16 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
         return;
       }
 
-      if (command === "/report") {
+      if (parsed.name === "/report") {
         setPhase("report");
         const result = await workflows.report();
         addEvent("agent", result.message);
+        setPhase("idle");
+        return;
+      }
+
+      if (parsed.name.startsWith("/") && !COMMANDS.some((item) => item.name === parsed.name)) {
+        addEvent("error", `Unknown command: ${parsed.name}. Type /help for available commands.`);
         setPhase("idle");
         return;
       }
@@ -211,9 +267,7 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
     setEvents((current) => [...current.slice(-20), event(role, text)]);
   }
 
-  const suggestions = input.startsWith("/")
-    ? COMMANDS.filter((command) => command.name.startsWith(input) || input === "/")
-    : [];
+  const suggestions = suggestionsForInput(input);
 
   return (
     <AgentBlastView
@@ -233,6 +287,12 @@ export function AgentBlastApp({ cwd, model = DEFAULT_CODEX_MODEL, workflows: inj
       pendingApply={pendingApply}
     />
   );
+
+  function suggestionsForInput(value: string): CommandDefinition[] {
+    if (!value.startsWith("/")) return [];
+    const commandName = value.split(/\s+/)[0] ?? value;
+    return COMMANDS.filter((command) => command.name.startsWith(commandName) || commandName === "/").slice(0, 6);
+  }
 }
 
 export function AgentBlastView(props: {
@@ -252,42 +312,57 @@ export function AgentBlastView(props: {
   pendingApply?: boolean;
 }) {
   const compact = props.width < 92;
-  const transcript = props.events.slice(-12);
+  const transcript = props.events.slice(compact ? -8 : -12);
   const accent = props.phase === "error" ? "red" : props.phase === "idle" ? "cyan" : "yellow";
+  const nextAction = nextActionFor(props);
 
   return (
     <Box flexDirection="column" minHeight={24}>
-      <Box justifyContent="space-between" borderStyle="single" borderColor={accent} paddingX={1}>
-        <Text bold color="cyan">Agent Blast</Text>
-        <Text color="gray">{shortenPath(props.cwd, compact ? 26 : 48)}</Text>
-        <Text color="gray">{props.model}</Text>
-        <Text color={props.oauthStatus.includes("OAuth") ? "green" : "yellow"}>{props.oauthStatus}</Text>
-        <Text color={accent}>{props.phase}</Text>
+      <Box flexDirection="column" borderStyle="single" borderColor={accent} paddingX={1}>
+        <Box justifyContent="space-between">
+          <Text bold color="cyan">Agent Blast</Text>
+          <Text color={accent}>{phaseLabel(props.phase)}</Text>
+        </Box>
+        <Box justifyContent="space-between">
+          <Text color="gray">{shortenPath(props.cwd, compact ? 46 : 70)}</Text>
+          <Text color={props.oauthStatus.includes("OAuth") ? "green" : "yellow"}>{props.oauthStatus} | {props.model}</Text>
+        </Box>
       </Box>
 
       <Box flexDirection={compact ? "column" : "row"} flexGrow={1}>
         <Box flexDirection="column" flexGrow={1} minHeight={16} borderStyle="single" borderColor="gray" paddingX={1}>
-          <Text bold>Transcript</Text>
+          <Box justifyContent="space-between">
+            <Text bold>Transcript</Text>
+            <Text color="gray">{nextAction}</Text>
+          </Box>
           {transcript.map((item) => (
             <Box key={item.id} flexDirection="column" marginTop={1}>
-              <Text color={roleColor(item.role)}>{roleLabel(item.role)}</Text>
-              <Text>{truncate(item.text, compact ? 700 : 1100)}</Text>
+              <Text>
+                <Text color={roleColor(item.role)}>{roleLabel(item.role).padEnd(12)}</Text>
+                <Text>{truncate(item.text, compact ? 700 : 1100)}</Text>
+              </Text>
             </Box>
           ))}
         </Box>
 
-        <Box flexDirection="column" width={compact ? undefined : 38} borderStyle="single" borderColor="gray" paddingX={1}>
-          <Text bold>Inspector</Text>
-          <Text color="gray">Entrypoints: {props.agentMap?.entrypoints.length ?? 0}</Text>
-          <Text color="gray">Model calls: {props.agentMap?.modelCalls.length ?? 0}</Text>
-          <Text color="gray">Prompts: {props.agentMap?.prompts.length ?? 0}</Text>
-          <Text color="gray">Tools: {props.agentMap?.tools.length ?? 0}</Text>
-          <Text color="gray">Retrieval: {props.agentMap?.retrieval.length ?? 0}</Text>
+        <Box flexDirection="column" width={compact ? undefined : 42} borderStyle="single" borderColor="gray" paddingX={1}>
+          <Box justifyContent="space-between">
+            <Text bold>Inspector</Text>
+            <Text color="gray">{surfaceTotal(props.agentMap)} surfaces</Text>
+          </Box>
+          <Box flexDirection="column" marginTop={1}>
+            <Text color="gray">EP {props.agentMap?.entrypoints.length ?? 0} | Model {props.agentMap?.modelCalls.length ?? 0} | Prompts {props.agentMap?.prompts.length ?? 0}</Text>
+            <Text color="gray">Tools {props.agentMap?.tools.length ?? 0} | Retrieval {props.agentMap?.retrieval.length ?? 0}</Text>
+          </Box>
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>Workflow</Text>
+            <Text>{workflowLine(props)}</Text>
+          </Box>
           <Box marginTop={1} flexDirection="column">
             <Text bold>Findings</Text>
-            {props.findings.slice(0, 6).map((finding) => (
+            {props.findings.slice(0, compact ? 4 : 6).map((finding) => (
               <Text key={finding.id} color={severityColor(finding.severity)}>
-                {finding.id} {finding.severity} {truncate(finding.title, 30)}
+                {finding.id} {finding.severity} {truncate(finding.title, compact ? 48 : 34)}
               </Text>
             ))}
             {props.findings.length === 0 && <Text color="gray">None yet</Text>}
@@ -296,11 +371,10 @@ export function AgentBlastView(props: {
             <Text bold>Red Team</Text>
             {props.redTeam ? (
               <>
-                <Text color={props.redTeam.failed > 0 ? "red" : "green"}>Failed: {props.redTeam.failed}</Text>
-                <Text color="green">Passed: {props.redTeam.passed}</Text>
-                <Text color="yellow">Review: {props.redTeam.needsReview}</Text>
-                <Text color="gray">Attempts: {props.redTeam.attempts ?? 0}</Text>
-                <Text color="gray">ASR: {formatRate(props.redTeam.attackSuccessRate)}</Text>
+                <Text color={props.redTeam.failed > 0 ? "red" : "green"}>
+                  {props.redTeam.failed} failed | {props.redTeam.passed} passed | {props.redTeam.needsReview} review
+                </Text>
+                <Text color="gray">{props.redTeam.mode} | {props.redTeam.attempts ?? 0} attempts | ASR {formatRate(props.redTeam.attackSuccessRate)}</Text>
               </>
             ) : (
               <Text color="gray">Not run</Text>
@@ -310,7 +384,7 @@ export function AgentBlastView(props: {
             <Text bold>Patches</Text>
             {props.patches.slice(0, 4).map((patch) => (
               <Text key={patch.id} color={patch.status === "applied" ? "green" : patch.status === "failed" ? "red" : "yellow"}>
-                {patch.id} {patch.status}
+                {patch.id} {patch.status} {truncate(patch.targetPath, compact ? 48 : 22)}
               </Text>
             ))}
             {props.patches.length === 0 && <Text color="gray">None yet</Text>}
@@ -326,16 +400,27 @@ export function AgentBlastView(props: {
       </Box>
 
       <Box flexDirection="column" borderStyle="single" borderColor={props.pendingApply ? "yellow" : "cyan"} paddingX={1}>
-        {props.suggestions.length > 0 && (
-          <Text color="gray">
-            {props.suggestions.map((command) => `${command.name} ${command.description}`).join("  ")}
-          </Text>
-        )}
+        {props.suggestions.length > 0 && <CommandPalette suggestions={props.suggestions} compact={compact} />}
         <Text>
-          <Text color="cyan">{props.pendingApply ? "confirm" : "agentblast"} </Text>
-          <Text>{props.pendingApply ? "press y/n" : props.input || "Type /inspect, /scan, or ask a codebase question"}</Text>
+          <Text color={props.pendingApply ? "yellow" : "cyan"}>{props.pendingApply ? "confirm > " : "agentblast > "}</Text>
+          <Text>{props.pendingApply ? "press y to apply, n to cancel" : props.input || "Type /, /redteam standard, or ask about the codebase"}</Text>
         </Text>
+        <Text color="gray">Enter run | Tab complete | Up/Down history | Esc clear | Ctrl-C quit</Text>
       </Box>
+    </Box>
+  );
+}
+
+function CommandPalette(props: { suggestions: CommandDefinition[]; compact: boolean }) {
+  return (
+    <Box flexDirection="column">
+      <Text color="gray">Commands</Text>
+      {props.suggestions.slice(0, props.compact ? 4 : 6).map((command, index) => (
+        <Text key={command.name}>
+          <Text color={index === 0 ? "cyan" : "gray"}>{index === 0 ? "> " : "  "}{props.compact ? command.name : command.usage}</Text>
+          <Text color="gray">  {command.description}</Text>
+        </Text>
+      ))}
     </Box>
   );
 }
@@ -357,6 +442,13 @@ function roleLabel(role: TranscriptEvent["role"]): string {
   return "System";
 }
 
+function phaseLabel(phase: Phase): string {
+  if (phase === "idle") return "ready";
+  if (phase === "confirm") return "confirmation required";
+  if (phase === "error") return "attention needed";
+  return `running ${phase}`;
+}
+
 function roleColor(role: TranscriptEvent["role"]): string {
   if (role === "user") return "cyan";
   if (role === "agent") return "white";
@@ -375,6 +467,120 @@ function severityColor(severity: string): string {
 function formatRate(value: number | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "0%";
   return `${Math.round(value * 1000) / 10}%`;
+}
+
+function surfaceTotal(agentMap: AgentMap | undefined): number {
+  if (!agentMap) return 0;
+  return agentMap.entrypoints.length + agentMap.modelCalls.length + agentMap.prompts.length + agentMap.tools.length + agentMap.retrieval.length;
+}
+
+function workflowLine(props: { agentMap?: AgentMap; findings: Finding[]; redTeam?: RedTeamRun; patches: PatchProposal[]; replay?: ReplayResult }): string {
+  const steps = [
+    ["inspect", Boolean(props.agentMap)],
+    ["scan", props.findings.length > 0],
+    ["redteam", Boolean(props.redTeam)],
+    ["harden", props.patches.length > 0],
+    ["replay", Boolean(props.replay)]
+  ] as const;
+  return steps.map(([name, done]) => `${done ? "[x]" : "[ ]"} ${name}`).join("  ");
+}
+
+function nextActionFor(props: {
+  agentMap?: AgentMap;
+  findings: Finding[];
+  redTeam?: RedTeamRun;
+  patches: PatchProposal[];
+  replay?: ReplayResult;
+  pendingApply?: boolean;
+}): string {
+  if (props.pendingApply) return "Next: confirm patch";
+  if (!props.agentMap) return "Next: /inspect";
+  if (props.findings.length === 0 && !props.redTeam) return "Next: /scan or /redteam standard";
+  if (!props.redTeam) return "Next: /redteam standard";
+  if (props.patches.some((patch) => patch.status === "proposed")) return "Next: /apply";
+  if (props.findings.some((finding) => finding.status === "open")) return "Next: /harden";
+  if (!props.replay) return "Next: /replay";
+  return "Next: /report";
+}
+
+export function parseInteractiveCommand(input: string): { name: string; args: string[] } {
+  const tokens = input.trim().split(/\s+/).filter(Boolean);
+  return {
+    name: tokens[0] ?? "",
+    args: tokens.slice(1)
+  };
+}
+
+export function parseRedTeamOptions(args: string[]): {
+  mode?: RedTeamMode;
+  strategy?: RedTeamStrategy;
+  maxCases?: number;
+  maxAttemptsPerCase?: number;
+  maxDepth?: number;
+  executor?: RedTeamExecutorMode;
+  includeTerminalChecks?: boolean;
+  objective?: string;
+} {
+  const result: ReturnType<typeof parseRedTeamOptions> = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const next = args[index + 1];
+    if (arg === "quick" || arg === "standard" || arg === "deep") {
+      result.mode = arg;
+      continue;
+    }
+    if (arg === "--mode" && isMode(next)) {
+      result.mode = next;
+      index += 1;
+      continue;
+    }
+    if (arg === "--strategy" && isStrategy(next)) {
+      result.strategy = next;
+      index += 1;
+      continue;
+    }
+    if (arg === "--executor" && isExecutor(next)) {
+      result.executor = next;
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-cases" && next) {
+      result.maxCases = Number(next);
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-attempts-per-case" && next) {
+      result.maxAttemptsPerCase = Number(next);
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-depth" && next) {
+      result.maxDepth = Number(next);
+      index += 1;
+      continue;
+    }
+    if (arg === "--include-terminal-checks") {
+      result.includeTerminalChecks = true;
+      continue;
+    }
+    if (arg === "--objective" && next) {
+      result.objective = next;
+      index += 1;
+    }
+  }
+  return result;
+}
+
+function isMode(value: string | undefined): value is RedTeamMode {
+  return value === "quick" || value === "standard" || value === "deep";
+}
+
+function isStrategy(value: string | undefined): value is RedTeamStrategy {
+  return value === "deterministic" || value === "fuzz" || value === "tree_search" || value === "hybrid";
+}
+
+function isExecutor(value: string | undefined): value is RedTeamExecutorMode {
+  return value === "auto" || value === "static" || value === "emulated" || value === "local_command" || value === "local_http";
 }
 
 function truncate(value: string, length: number): string {
