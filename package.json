@@ -7,7 +7,7 @@
   "types": "./dist/index.d.ts",
   "exports": "./dist/index.js",
   "bin": {
-    "agentblast": "./dist/cli.js"
+    "agentblast": "dist/cli.js"
   },
   "files": [
     "dist",
