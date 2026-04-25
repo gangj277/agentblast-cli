@@ -1,0 +1,65 @@
+{
+  "name": "agentblast-cli",
+  "version": "0.1.0",
+  "description": "Local defensive red-team and hardening CLI for AI agents.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": "./dist/index.js",
+  "bin": {
+    "agentblast": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.tsx",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:agent-tools": "tsx scripts/agent-tool-loop-smoke.ts",
+    "test:frontier-redteam": "tsx scripts/frontier-redteam-self-test.ts",
+    "test:frontier-redteam:deep": "tsx scripts/frontier-redteam-self-test.ts --mode deep",
+    "test:codex": "tsx scripts/codex-oauth-smoke.ts",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GANGJ277/agentblast-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GANGJ277/agentblast-cli/issues"
+  },
+  "homepage": "https://github.com/GANGJ277/agentblast-cli#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai-security",
+    "agents",
+    "prompt-injection",
+    "codex",
+    "cli"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.2.14",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "fast-glob": "^3.3.3",
+    "ignore": "^7.0.5",
+    "ink": "^7.0.1",
+    "react": "^19.2.5"
+  }
+}
